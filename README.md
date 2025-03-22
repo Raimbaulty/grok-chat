@@ -34,7 +34,7 @@ A simple one-file PHP wrapper for the Grok API.
    api-key=your-grok-api-key
    cf-account-id=your-cloudflare-account-id
    ```
-Important: You need to reate an AI Gateway named ai: [Create AI Gateway](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway)
+Important: You need to create an AI Gateway named ai : [Create AI Gateway](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway)
 
 3. Start the PHP dev server:
    ```bash

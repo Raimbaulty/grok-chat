@@ -759,7 +759,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
 
 <script>
 // 添加全局变量，表示是否有API凭据
-const hasApiCredentials = <?= (isset($_SESSION['api_key']) && isset($_SESSION['account_id']) || 
+let hasApiCredentials = <?= (isset($_SESSION['api_key']) && isset($_SESSION['account_id']) || 
                              (@parse_ini_file(".env") && parse_ini_file(".env")["api-key"]) || 
                              getenv("api-key")) ? 'true' : 'false' ?>;
 
