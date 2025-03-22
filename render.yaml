@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: grok-php
+    env: docker
+    repo: https://github.com/365cent/grok-chat
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: api-key
+        sync: false
+      - key: cf-account-id
+        sync: false
+    autoDeploy: true
+    plan: free

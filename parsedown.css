@@ -1,0 +1,137 @@
+.parsedown p {
+    margin: 0 0 16px 0;
+    padding: 0;
+}
+
+.parsedown h1, .parsedown h2, .parsedown h3, .parsedown h4, .parsedown h5, .parsedown h6 {
+    font-weight: bold;
+    color: #333333;
+}
+
+.parsedown h1 {
+    font-size: 24px;
+    margin: 24px 0 16px 0;
+    border-bottom: 1px solid #cccccc;
+    padding-bottom: 6px;
+}
+
+.parsedown h2 {
+    font-size: 20px;
+    margin: 20px 0 14px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #cccccc;
+}
+
+.parsedown h3 {
+    font-size: 18px;
+    margin: 18px 0 12px 0;
+}
+
+.parsedown h4, .parsedown h5, .parsedown h6 {
+    font-size: 16px;
+    margin: 16px 0 8px 0;
+}
+
+.parsedown ul, .parsedown ol {
+    margin: 0 0 16px 0;
+    padding: 0 0 0 20px;
+}
+
+.parsedown ul {
+    list-style-type: disc;
+}
+
+.parsedown ol {
+    list-style-type: decimal;
+}
+
+.parsedown ul li, .parsedown ol li {
+    margin-bottom: 6px;
+}
+
+.parsedown blockquote {
+    margin: 16px 0;
+    padding: 8px 16px;
+    border-left: 4px solid #cccccc;
+    background-color: #f0f0f0;
+}
+
+.parsedown code, .parsedown pre {
+    font-family: monospace;
+    font-size: 14px;
+    color: #000000;
+    background-color: #f0f0f0;
+}
+
+.parsedown code {
+    padding: 2px 4px;
+}
+
+.parsedown pre {
+    padding: 12px;
+    margin: 16px 0;
+    overflow: auto;
+    border: 1px solid #cccccc;
+    border-radius: 0.3em;
+}
+
+.parsedown img {
+    max-width: 100%;
+    border: 1px solid #cccccc;
+    margin: 16px 0;
+}
+
+.parsedown table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 14px;
+    line-height: 1.5;
+    border: 1px solid #eaeaea;
+    border-radius: 1em;
+    overflow: hidden;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.parsedown th, .parsedown td {
+    padding: 12px 16px;
+    border: 1px solid #eaeaea;
+    text-align: left;
+}
+
+.parsedown th {
+    background-color: #eeeeee;
+    font-weight: 600;
+    color: #000;
+    font-size: 14px;
+    border-bottom: 1px solid #eaeaea;
+}
+
+.parsedown tr:nth-child(even) td {
+    background-color: #fafafa;
+}
+
+.parsedown tr:hover td {
+    background-color: rgba(0, 0, 0, 0.02);
+    transition: background-color 0.2s ease;
+}
+
+.parsedown a {
+    color: #da7756;
+    text-decoration: underline;
+}
+
+.parsedown strong {
+    font-weight: bold;
+}
+
+.parsedown em {
+    font-style: italic;
+}
+
+.parsedown hr {
+    border: none;
+    height: 1px;
+    background-color: #cccccc;
+    margin: 24px 0;
+}
