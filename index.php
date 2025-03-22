@@ -417,10 +417,6 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
   <link href="https://fastly.jsdelivr.net/npm/remixicon@4.5.0/fonts/remixicon.css" rel="stylesheet"/>
   <link href="parsedown.css" rel="stylesheet"/>
   <style>
-    form::after,textarea {grid-area: 1/1/2/2}
-    form::after{content:attr(data-replicated-value)" ";white-space:pre-wrap;visibility:hidden;}
-    
-    /* 高级加载动画 */
     .typing-indicator {
       display: flex;
       align-items: center;
@@ -551,7 +547,17 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
     }
     
     #message-input {
-      transition: padding-bottom 0.3s ease;
+      transition: all 0.2s ease;
+      word-break: break-word;
+      overflow-wrap: break-word;
+      max-height: 200px; /* 添加最大高度限制 */
+      overflow-y: auto; /* 超过最大高度时允许滚动 */
+      width: 100%;
+      min-height: 24px;
+      line-height: 1.5;
+      padding-top: 0.5rem;
+      padding-bottom: 0.5rem;
+      box-sizing: border-box;
     }
     
     /* 模态框样式 */
@@ -644,9 +650,9 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
     </div>
   </div>
   <div class="fixed bottom-0 w-full max-w-[50rem] left-1/2 -translate-x-1/2 p-3">
-    <form id="chat-form" method="POST" enctype="multipart/form-data" class="grid relative bg-stone-50 p-2 rounded-3xl ring-1 ring-gray-200 hover:ring-gray-300 hover:shadow hover:bg-white focus-within:ring-gray-300 duration-300" data-replicated-value="">
-      <div class="relative">
-        <textarea id="message-input" name="message" class="w-full px-3 py-2 bg-transparent focus:outline-none" placeholder="Grok能帮您什么?" style="resize:none;" oninput="updateReplicatedValue(this)"></textarea>
+    <form id="chat-form" method="POST" enctype="multipart/form-data" class="flex flex-col relative bg-stone-50 p-2 rounded-3xl ring-1 ring-gray-200 hover:ring-gray-300 hover:shadow hover:bg-white focus-within:ring-gray-300 duration-300">
+      <div class="relative flex-grow">
+        <textarea id="message-input" name="message" class="w-full px-3 py-2 bg-transparent focus:outline-none resize-none overflow-auto" placeholder="Grok能帮您什么?" oninput="updateReplicatedValue(this)" rows="1"></textarea>
         <div id="image-preview" class="hidden absolute right-10 top-1/2 -translate-y-1/2 mr-2">
           <div class="relative inline-block">
             <img src="" alt="预览" class="rounded border border-gray-300"/>
@@ -654,20 +660,22 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
           </div>
         </div>
       </div>
-      <div class="flex items-center gap-3 px-3 pt-1">
-        <button type="button" id="draw-image-btn" class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="AI绘图">
-          <i class="ri-image-add-line text-xl leading-none"></i>
-        </button>
-        <label class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="上传图片">
-          <input type="file" name="image" accept=".jpg,.jpeg,.png,.gif,.webp,.bmp" class="hidden" onchange="showImagePreview(this)"/>
-          <i class="ri-camera-line text-xl leading-none"></i>
-        </label>
+      <div class="flex items-center justify-between mt-1">
+        <div class="flex items-center gap-3 px-3">
+          <button type="button" id="draw-image-btn" class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="AI绘图">
+            <i class="ri-image-add-line text-xl leading-none"></i>
+          </button>
+          <label class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="上传图片">
+            <input type="file" name="image" accept=".jpg,.jpeg,.png,.gif,.webp,.bmp" class="hidden" onchange="showImagePreview(this)"/>
+            <i class="ri-camera-line text-xl leading-none"></i>
+          </label>
+        </div>
+        <div>
+          <button id="submit-button" type="submit" disabled class="rounded-full bg-black hover:bg-gray-600 text-white p-2 leading-none disabled:bg-gray-300 duration-300"><i class="ri-arrow-up-line text-xl"></i></button>
+        </div>
       </div>
       <input type="hidden" name="actual_model" id="actual-model-input" value="">
       <input type="hidden" id="model-select" name="model" value="<?= MODEL_CHAT ?>">
-      <div class="absolute bottom-2 right-2">
-        <button id="submit-button" type="submit" disabled class="rounded-full bg-black hover:bg-gray-600 text-white p-2 leading-none disabled:bg-gray-300 duration-300"><i class="ri-arrow-up-line text-xl"></i></button>
-      </div>
     </form>
   </div>
 </main>
@@ -1246,7 +1254,6 @@ chatForm.addEventListener('submit', async (e) => {
   
   // 清空输入
   messageInput.value = '';
-  chatForm.dataset.replicatedValue = '';
   clearImage();
   submitButton.disabled = true;
   
@@ -1381,7 +1388,8 @@ window.addEventListener('load', () => {
   ModelManager.updateUI();
   
   // 初始化textarea的replicated value
-  updateReplicatedValue(document.getElementById('message-input'));
+  const textarea = document.getElementById('message-input');
+  updateReplicatedValue(textarea);
   
   // 检查是否已经上传图片，如果有则禁用绘图按钮
   if (document.querySelector('input[type=file]').files[0]) {
@@ -1475,7 +1483,6 @@ confirmClearBtn.addEventListener('click', async () => {
       
       // 重置表单
       messageInput.value = '';
-      chatForm.dataset.replicatedValue = '';
       clearImage();
       submitButton.disabled = true;
       
@@ -1503,9 +1510,9 @@ console.log('Grok聊天应用已加载 - 已添加AI绘图功能');
 
 // 更新表单的replicated value来处理自动调整高度
 const updateReplicatedValue = (textarea) => {
-  // 更新表单的replicated value（需要获取form元素）
-  const chatForm = document.getElementById('chat-form');
-  chatForm.dataset.replicatedValue = textarea.value;
+  // 动态调整输入框高度 - 简化版本
+  textarea.style.height = 'auto'; // 先重置高度
+  textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px'; // 调整到内容高度，最大200px
 };
 
 // API密钥模态框处理
