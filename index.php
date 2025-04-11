@@ -1,18 +1,12 @@
 <?php
 // 模型常量定义
-define('MODEL_CHAT', 'grok-2-latest');
+define('MODEL_CHAT', 'grok-3-beta');
 define('MODEL_VISION', 'grok-2-vision-latest');
 define('MODEL_IMAGE', 'grok-2-image-latest');
-
-session_start();
-$_SESSION["messages"] = $_SESSION["messages"] ?? [];
-$_SESSION["images"] = $_SESSION["images"] ?? [];
-$_SESSION["model"] = MODEL_CHAT; // 使用常量初始化模型
+define('MODEL_REASONING', 'grok-3-mini-beta');
 
 // 检查是否有前端保存的API密钥和账户ID
 if (isset($_POST['save_credentials']) && isset($_POST['api_key']) && isset($_POST['account_id'])) {
-    $_SESSION['api_key'] = $_POST['api_key'];
-    $_SESSION['account_id'] = $_POST['account_id'];
     if ($isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
         header('Content-Type: application/json');
         echo json_encode(['success' => true, 'message' => '凭据已保存']);
@@ -37,11 +31,12 @@ function determineModel($requestedModel, $image = null) {
         return MODEL_IMAGE;
     } else if ($requestedModel === MODEL_VISION) {
         return MODEL_VISION;
+    } else if ($requestedModel === MODEL_REASONING) {
+        return MODEL_REASONING;
     } else {
         return MODEL_CHAT;
     }
-}
-
+  }
 /**
  * 构建消息内容
  * @param string $message 文本消息
@@ -77,11 +72,7 @@ function buildMessageContent($message, $image = null) {
 require_once 'Parsedown.php';
 
 // 配置环境参数
-if (isset($_SESSION['api_key']) && isset($_SESSION['account_id'])) {
-    // 优先使用用户通过前台保存的凭据
-    $_ENV["api-key"] = $_SESSION['api_key'];
-    $_ENV["cf-account-id"] = $_SESSION['account_id'];
-} elseif ($env = @parse_ini_file(".env")) {
+if ($env = @parse_ini_file(".env")) {
     $_ENV["api-key"] = $env["api-key"];
     $_ENV["cf-account-id"] = $env["cf-account-id"];
 } elseif (getenv("api-key")) {
@@ -96,23 +87,11 @@ if ($_SERVER["REQUEST_METHOD"] === "GET") {
     header("Cache-Control: public, max-age=120");
 }
 
-if (isset($_GET["clear"])) {
-    session_destroy();
-    header("Location: " . $_SERVER["PHP_SELF"]);
-    exit();
-}
-
 // 检查是否为AJAX请求
 $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
 
 // 处理清除历史的 AJAX 请求
 if (isset($_GET['clear_history']) && $isAjax) {
-    session_destroy();
-    session_start();
-    $_SESSION["messages"] = [];
-    $_SESSION["images"] = [];
-    $_SESSION["model"] = MODEL_CHAT;
-    
     header('Content-Type: application/json');
     echo json_encode([
         'success' => true,
@@ -123,16 +102,10 @@ if (isset($_GET['clear_history']) && $isAjax) {
 
 // 处理保存响应的请求
 if (isset($_POST['saveResponse']) && $_POST['saveResponse'] === 'true') {
-    $_SESSION["messages"][] = [
-        "role" => "assistant",
-        "content" => $_POST['response']
-    ];
-    
     if ($isAjax) {
         header('Content-Type: application/json');
         echo json_encode([
-            'success' => true,
-            'messages' => $_SESSION["messages"]
+            'success' => true
         ]);
         exit;
     }
@@ -152,32 +125,44 @@ if (isset($_GET['stream'])) {
     }
     
     $msg = trim($_POST["message"] ?? "");
-    $requestedModel = $_POST["actual_model"] ?? $_POST["model"] ?? $_SESSION["model"] ?? MODEL_CHAT;
+    $requestedModel = $_POST["actual_model"] ?? $_POST["model"] ?? MODEL_CHAT;
     $image = $_FILES["image"] ?? null;
     
     // 使用辅助函数确定模型
     $model = determineModel($requestedModel, $image);
-    $_SESSION["model"] = $model; // 保存到会话中
     
     // 使用辅助函数构建消息内容
     $content = buildMessageContent($msg, $image);
     
-    // 添加用户消息到会话
-    $_SESSION["messages"][] = ["role" => "user", "content" => $content];
+    // 构建消息数组，使用客户端提供的消息历史
+    $messages = [];
+    $messagesJson = $_POST["messages"] ?? "[]";
+    $messagesData = json_decode($messagesJson, true);
+    
+    if(is_array($messagesData)) {
+        $messages = $messagesData;
+    }
+    
+    // 添加用户消息
+    $messages[] = ["role" => "user", "content" => $content];
+    
+    // 获取客户端提供的API密钥和账户ID
+    $apiKey = $_POST["api_key"] ?? $_ENV["api-key"];
+    $accountId = $_POST["account_id"] ?? $_ENV["cf-account-id"];
     
     // 用流式处理聊天请求
-    $ch = curl_init("https://gateway.ai.cloudflare.com/v1/".$_ENV["cf-account-id"]."/ai/grok/v1/chat/completions");
+    $ch = curl_init("https://gateway.ai.cloudflare.com/v1/".$accountId."/ai/grok/v1/chat/completions");
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => json_encode([
             "model" => $model,
-            "messages" => $_SESSION["messages"],
+            "messages" => $messages,
             "stream" => true,
         ]),
         CURLOPT_HTTPHEADER => [
             "Content-Type: application/json",
-            "Authorization: Bearer " . $_ENV["api-key"],
+            "Authorization: Bearer " . $apiKey,
         ],
         CURLOPT_WRITEFUNCTION => function($curl, $data) {
             echo $data;
@@ -207,11 +192,19 @@ if (isset($_GET['generate_image'])) {
     
     // 图像生成始终使用图像模型
     $model = MODEL_IMAGE;
-    $_SESSION["model"] = $model; // 保存到会话中
     
     if ($msg) {
-        // 添加用户消息到会话
-        $_SESSION["messages"][] = [
+        // 构建消息，使用客户端提供的消息历史
+        $messages = [];
+        $messagesJson = $_POST["messages"] ?? "[]";
+        $messagesData = json_decode($messagesJson, true);
+        
+        if(is_array($messagesData)) {
+            $messages = $messagesData;
+        }
+        
+        // 添加用户消息
+        $messages[] = [
             "role" => "user", 
             "content" => [
                 [
@@ -221,7 +214,11 @@ if (isset($_GET['generate_image'])) {
             ]
         ];
         
-        $ch = curl_init("https://gateway.ai.cloudflare.com/v1/".$_ENV["cf-account-id"]."/ai/grok/v1/images/generations");
+        // 获取客户端提供的API密钥和账户ID
+        $apiKey = $_POST["api_key"] ?? $_ENV["api-key"];
+        $accountId = $_POST["account_id"] ?? $_ENV["cf-account-id"];
+        
+        $ch = curl_init("https://gateway.ai.cloudflare.com/v1/".$accountId."/ai/grok/v1/images/generations");
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
@@ -233,7 +230,7 @@ if (isset($_GET['generate_image'])) {
             ]),
             CURLOPT_HTTPHEADER => [
                 "Content-Type: application/json",
-                "Authorization: Bearer " . $_ENV["api-key"],
+                "Authorization: Bearer " . $apiKey,
             ],
         ]);
         
@@ -250,18 +247,20 @@ if (isset($_GET['generate_image'])) {
                     ],
                 ];
             }
-            $_SESSION["messages"][] = [
+            $responseMessage = [
                 "role" => "assistant",
                 "content" => $imageContent,
             ];
             
+            $messages[] = $responseMessage;
+            
             echo json_encode([
                 'success' => true,
                 'images' => $imageContent,
-                'messages' => $_SESSION["messages"]
+                'messages' => $messages
             ]);
         } else {
-            $_SESSION["messages"][] = [
+            $responseMessage = [
                 "role" => "assistant",
                 "content" => [
                     [
@@ -271,10 +270,12 @@ if (isset($_GET['generate_image'])) {
                 ]
             ];
             
+            $messages[] = $responseMessage;
+            
             echo json_encode([
                 'success' => false,
                 'error' => '图像生成失败。请稍后再试。',
-                'messages' => $_SESSION["messages"]
+                'messages' => $messages
             ]);
         }
         
@@ -290,122 +291,9 @@ if (isset($_GET['generate_image'])) {
 }
 
 if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
-    $msg = trim($_POST["message"] ?? "");
-    $image = $_FILES["image"] ?? null;
-    $requestedModel = $_POST["actual_model"] ?? $_POST["model"] ?? $_SESSION["model"] ?? MODEL_CHAT;
-    
-    // 使用辅助函数确定模型
-    $model = determineModel($requestedModel, $image);
-    $_SESSION["model"] = $model; // 保存到会话中
-    
-    // 使用辅助函数构建消息内容
-    $content = buildMessageContent($msg, $image);
-
-    if (!empty($content)) {
-        $_SESSION["messages"][] = ["role" => "user", "content" => $content];
-
-        // 处理图片生成请求
-        if ($model === MODEL_IMAGE) {
-            $ch = curl_init("https://gateway.ai.cloudflare.com/v1/".$_ENV["cf-account-id"]."/ai/grok/v1/images/generations");
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => json_encode([
-                    "model" => MODEL_IMAGE,
-                    "prompt" => $msg,
-                    "n" => 1,
-                    "response_format" => "b64_json"
-                ]),
-                CURLOPT_HTTPHEADER => [
-                    "Content-Type: application/json",
-                    "Authorization: Bearer " . $_ENV["api-key"],
-                ],
-            ]);
-            
-            $response = curl_exec($ch);
-            $res = json_decode($response, true);
-            
-            if (!empty($res["data"])) {
-                $imageContent = [];
-                foreach ($res["data"] as $image) {
-                    $imageContent[] = [
-                        "type" => "image_url",
-                        "image_url" => [
-                            "url" => "data:image/png;base64," . ($image["b64_json"] ?? ''),
-                        ],
-                    ];
-                }
-                $_SESSION["messages"][] = [
-                    "role" => "assistant",
-                    "content" => $imageContent,
-                ];
-            } else {
-                $_SESSION["messages"][] = [
-                    "role" => "assistant",
-                    "content" => [
-                        [
-                            "type" => "text",
-                            "text" => "图像生成失败。请稍后再试。"
-                        ]
-                    ]
-                ];
-            }
-            
-            curl_close($ch);
-        } else {
-            // 处理聊天请求（非流式备用）
-            $ch = curl_init("https://gateway.ai.cloudflare.com/v1/".$_ENV["cf-account-id"]."/ai/grok/v1/chat/completions");
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => json_encode([
-                    "model" => $model,
-                    "messages" => $_SESSION["messages"],
-                ]),
-                CURLOPT_HTTPHEADER => [
-                    "Content-Type: application/json",
-                    "Authorization: Bearer " . $_ENV["api-key"],
-                ],
-            ]);
-
-            $response = curl_exec($ch);
-            $res = json_decode($response, true);
-            
-            if (!empty($res["choices"][0]["message"]["content"])) {
-                $_SESSION["messages"][] = [
-                    "role" => "assistant",
-                    "content" => [
-                        [
-                            "type" => "text",
-                            "text" => $res["choices"][0]["message"]["content"]
-                        ]
-                    ]
-                ];
-            } else {
-                $_SESSION["messages"][] = [
-                    "role" => "assistant", 
-                    "content" => [
-                        [
-                            "type" => "text",
-                            "text" => "获取响应失败。请检查您的API密钥和账户ID。"
-                        ]
-                    ]
-                ];
-            }
-
-            curl_close($ch);
-        }
-    }
-    
-    // 如果是AJAX请求，返回JSON响应
-    if ($isAjax) {
-        header('Content-Type: application/json');
-        echo json_encode([
-            'success' => true,
-            'messages' => $_SESSION["messages"]
-        ]);
-        exit;
-    }
+    header('Content-Type: application/json');
+    echo json_encode(['success' => true]);
+    exit;
 }
 ?>
 <!DOCTYPE html>
@@ -414,6 +302,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Grok Chat</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="icon" href="https://docs.x.ai/favicon.ico" type="image/x-icon">
   <link href="https://fastly.jsdelivr.net/npm/remixicon@4.5.0/fonts/remixicon.css" rel="stylesheet"/>
   <link href="parsedown.css" rel="stylesheet"/>
   <style>
@@ -528,7 +417,54 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
       color: #3b82f6;
       box-shadow: 0 0 0 1px #3b82f6;
     }
-    
+
+    /* 推理按钮激活状态 */
+    #reasoning-btn.active {
+      background-color: #dbeafe;
+      color: #3b82f6;
+      box-shadow: 0 0 0 1px #3b82f6;
+    }
+
+    /* 思考过程容器 */
+    .think-container {
+      background-color: #f8f9fa;
+      border-left: 3px solid #4b5563;
+      margin: 0.5rem 0;
+      padding: 0.5rem;
+      border-radius: 0 0.25rem 0.25rem 0;
+      overflow: hidden;
+      max-height: 0;
+      transition: max-height 0.3s ease-out;
+    }
+
+    .think-container.expanded {
+      max-height: 1000px; /* 足够大的高度以显示内容 */
+      transition: max-height 0.5s ease-in;
+    }
+
+    .think-toggle {
+      display: block;
+      user-select: none;
+      cursor: pointer;
+      color: #4b5563;
+      font-size: 0.85rem;
+      padding: 0.25rem 0;
+    }
+
+    .think-toggle:hover {
+      text-decoration: underline;
+    }
+
+    .think-toggle::before {
+      content: '▶ 展开思考过程';
+      display: inline-block;
+      transition: transform 0.3s;
+    }
+
+    .think-toggle.expanded::before {
+      content: '▼ 收起思考过程';
+    }
+
     /* 图片预览样式 */
     #image-preview {
       transition: all 0.3s ease;
@@ -612,7 +548,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
       </div>
       <div class="flex items-center gap-3">
         <a href="#" id="clear-history-btn" title="清除历史" class="p-1 hover:bg-gray-200 rounded-full leading-none transition-colors"><i class="ri-edit-line text-xl leading-none"></i></a>
-        <button onclick="navigator.share({title:'Grok聊天',text:'查看我与Grok的聊天',url:window.location.href})" class="p-1 hover:bg-gray-200 rounded-full leading-none transition-colors">
+        <button title="分享" onclick="navigator.share({title:'Grok聊天',text:'查看我与Grok的聊天',url:window.location.href})" class="p-1 hover:bg-gray-200 rounded-full leading-none transition-colors">
           <i class="ri-share-2-line text-xl leading-none"></i>
         </button>
         <button id="api-key-btn" title="设置API密钥" class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors">
@@ -623,30 +559,6 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
   </header>
   <div id="chat-container" class="flex-1 overflow-y-auto px-5 pt-16 pb-40">
     <div id="messages-container" class="max-w-[50rem] mx-auto flex flex-col gap-4 pb-4">
-      <?php 
-      $parsedown = new Parsedown();
-      
-      foreach ($_SESSION["messages"] as $m):
-          $isUser = $m["role"] === "user"; ?>
-        <div class="flex <?= $isUser ? "justify-end" : "parsedown justify-start" ?>">
-          <div class="max-w-[80%] <?= $isUser
-              ? "bg-blue-500 text-white rounded-l-3xl rounded-t-3xl p-3"
-              : "assistant-bubble" ?>">
-            <?php if (is_array($m["content"])): ?>
-              <?php foreach ($m["content"] as $content): ?>
-                <?php if (isset($content["type"]) && $content["type"] === "image_url"): ?>
-                  <img src="<?= $content["image_url"]["url"] ?>" class="max-w-full rounded-lg mb-2" />
-                <?php else: ?>
-                  <?= $parsedown->text($content["text"] ?? ($content ?? "")) ?>
-                <?php endif; ?>
-              <?php endforeach; ?>
-            <?php else: ?>
-              <?= $parsedown->text($m["content"] ?? "错误：内容缺失") ?>
-            <?php endif; ?>
-          </div>
-        </div>
-      <?php
-      endforeach; ?>
     </div>
   </div>
   <div class="fixed bottom-0 w-full max-w-[50rem] left-1/2 -translate-x-1/2 p-3">
@@ -662,7 +574,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
       </div>
       <div class="flex items-center justify-between mt-1">
         <div class="flex items-center gap-3 px-3">
-          <button type="button" id="draw-image-btn" class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="AI绘图">
+          <button type="button" id="reasoning-btn" class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="推理">
+            <i class="ri-question-line text-xl leading-none"></i>
+          </button>
+          <button type="button" id="draw-image-btn" class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="绘图">
             <i class="ri-image-add-line text-xl leading-none"></i>
           </button>
           <label class="p-1 hover:bg-gray-200 rounded-full leading-none cursor-pointer transition-colors" title="上传图片">
@@ -675,7 +590,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
         </div>
       </div>
       <input type="hidden" name="actual_model" id="actual-model-input" value="">
-      <input type="hidden" id="model-select" name="model" value="<?= MODEL_CHAT ?>">
+      <input type="hidden" id="model-select" name="model" value="grok-3-beta">
+      <input type="hidden" name="messages" id="messages-input" value="[]">
     </form>
   </div>
 </main>
@@ -733,11 +649,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
         <input type="text" id="account-id" name="account_id" placeholder="请输入您的Cloudflare账户ID" class="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500" required>
       </div>
       <div class="text-sm text-gray-500 mb-4">
-        <p>您的凭据会保存在浏览器会话中，不会永久存储。</p>
-        <p class="mt-1">您需要前往<a href="https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" target="_blank" class="text-blue-500 hover:underline">Cloudflare控制面板</a>中创建AI Gateway：<a href="https://69.197.134.230/archives/grok-dui-hua-mian-ban-jiao-cheng" target="_blank" class="text-blue-500 hover:underline">教程地址</a>。</p>
+        <p>您的凭据会保存在浏览器本地存储中，不会发送到服务器。</p>
+        <p class="mt-1">您需要前往<a href="https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" target="_blank" class="text-blue-500 hover:underline">Cloudflare控制面板</a>中创建AI Gateway，<a href="https://69.197.134.230/archives/grok-dui-hua-mian-ban-jiao-cheng" target="_blank" class="text-blue-500 hover:underline">查看教程</a>。</p>
       </div>
       <div class="flex justify-end">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md transition-colors">保存凭据</button>
+        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md transition-colors">保存</button>
       </div>
     </form>
   </div>
@@ -766,34 +682,78 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && !isset($_POST['saveResponse'])) {
 </div>
 
 <script>
+// localStorage存储键名定义
+const STORAGE_KEYS = {
+  API_KEY: 'grok_api_key',
+  ACCOUNT_ID: 'grok_account_id',
+  MESSAGES: 'grok_messages',
+  MODEL: 'grok_model'
+};
+
 // 添加全局变量，表示是否有API凭据
-let hasApiCredentials = <?= (isset($_SESSION['api_key']) && isset($_SESSION['account_id']) || 
-                             (@parse_ini_file(".env") && parse_ini_file(".env")["api-key"]) || 
-                             getenv("api-key")) ? 'true' : 'false' ?>;
+let hasApiCredentials = false;
 
 // 模型管理器对象
 const ModelManager = {
   // 模型类型常量
   MODELS: {
-    CHAT: 'grok-2-latest',
+    CHAT: 'grok-3-beta',
     VISION: 'grok-2-vision-latest',
-    IMAGE: 'grok-2-image-latest'
+    IMAGE: 'grok-2-image-latest',
+    REASONING: 'grok-3-mini-beta'
   },
   
   // 当前模型状态
-  currentModel: '<?= $_SESSION["model"] ?>',
-  previousModel: '<?= $_SESSION["model"] ?>',
+  currentModel: 'grok-3-beta',
+  previousModel: 'grok-3-beta',
   
   // 设置当前模型
   setModel: function(model) {
     this.previousModel = this.currentModel;
     this.currentModel = model;
     
+    // 保存到localStorage
+    localStorage.setItem(STORAGE_KEYS.MODEL, model);
+    
     // 更新UI
     this.updateUI();
     
     return this.currentModel;
   },
+
+  // 设置推理模式
+  setReasoningMode: function() {
+  // 检查是否已上传图片
+  if (document.querySelector('input[type=file]').files[0]) {
+    // 有图片上传时不能进入推理模式
+    return this.currentModel;
+  }
+  
+  this.previousModel = this.currentModel;
+  this.currentModel = this.MODELS.REASONING;
+  
+  // 保存到localStorage
+  localStorage.setItem(STORAGE_KEYS.MODEL, this.currentModel);
+  
+  // 更新隐藏输入
+  document.getElementById('model-select').value = this.MODELS.REASONING;
+  
+  // 更新UI
+  this.updateUI();
+  
+  // 聚焦消息输入框并更新提示
+  const messageInput = document.getElementById('message-input');
+  messageInput.focus();
+  messageInput.placeholder = "请提出需要深度思考的问题...";
+  
+  // 推理按钮激活状态
+  document.getElementById('reasoning-btn').classList.add('active');
+  
+  // 绘图按钮取消激活状态
+  document.getElementById('draw-image-btn').classList.remove('active');
+  
+  return this.currentModel;
+},
   
   // 设置绘图模式
   setDrawingMode: function() {
@@ -806,6 +766,9 @@ const ModelManager = {
     this.previousModel = this.currentModel;
     this.currentModel = this.MODELS.IMAGE;
     
+    // 保存到localStorage
+    localStorage.setItem(STORAGE_KEYS.MODEL, this.currentModel);
+    
     // 更新隐藏输入
     document.getElementById('model-select').value = this.MODELS.IMAGE;
     
@@ -817,17 +780,23 @@ const ModelManager = {
     messageInput.focus();
     messageInput.placeholder = this.getPlaceholder(this.MODELS.IMAGE);
     
-    // 视觉效果 - 绘图按钮激活状态
+    // 绘图按钮激活状态
     document.getElementById('draw-image-btn').classList.add('active');
+
+  // 移除推理按钮激活状态
+  document.getElementById('reasoning-btn').classList.remove('active');
     
     return this.currentModel;
   },
   
   // 切换回聊天模式
   setChatMode: function() {
-    // 仅当当前是图像模式时切换回聊天模式
-    if (this.currentModel === this.MODELS.IMAGE) {
+    // 仅当当前是图像模式或推理模式时切换回聊天模式
+    if (this.currentModel === this.MODELS.IMAGE || this.currentModel === this.MODELS.REASONING) {
       this.currentModel = this.MODELS.CHAT;
+      
+      // 保存到localStorage
+      localStorage.setItem(STORAGE_KEYS.MODEL, this.currentModel);
       
       // 更新隐藏输入
       document.getElementById('model-select').value = this.MODELS.CHAT;
@@ -835,8 +804,11 @@ const ModelManager = {
       // 更新UI
       this.updateUI();
       
-      // 视觉效果 - 移除绘图按钮激活状态
+      // 移除绘图按钮激活状态
       document.getElementById('draw-image-btn').classList.remove('active');
+
+      // 移除推理按钮激活状态
+      document.getElementById('reasoning-btn').classList.remove('active');
     }
     
     return this.currentModel;
@@ -852,6 +824,9 @@ const ModelManager = {
     const temp = this.currentModel;
     this.currentModel = this.previousModel;
     this.previousModel = temp;
+    
+    // 保存到localStorage
+    localStorage.setItem(STORAGE_KEYS.MODEL, this.currentModel);
     
     // 更新UI
     this.updateUI();
@@ -884,6 +859,8 @@ const ModelManager = {
       return "请描述您想生成的图像...";
     } else if (model === this.MODELS.VISION) {
       return "您可以提问或上传图片...";
+    } else if (model === this.MODELS.REASONING) {
+      return "请提出需要深度思考的问题...";
     } else {
       return "Grok能帮您什么?";
     }
@@ -912,6 +889,162 @@ const ModelManager = {
         drawButton.classList.remove('active');
       }
     }
+
+    // 推理模式激活状态
+    const reasoningButton = document.getElementById('reasoning-btn');
+    if (reasoningButton) {
+      if (this.currentModel === this.MODELS.REASONING) {
+        reasoningButton.classList.add('active');
+      } else {
+        reasoningButton.classList.remove('active');
+      }
+    }
+  },
+  
+  // 从localStorage加载模型状态
+  loadFromStorage: function() {
+    const storedModel = localStorage.getItem(STORAGE_KEYS.MODEL);
+    if (storedModel) {
+      this.currentModel = storedModel;
+      this.updateUI();
+    }
+  }
+};
+
+// 聊天消息管理器
+const MessageManager = {
+  // 消息数组
+  messages: [],
+  
+  // 添加消息
+  addMessage: function(role, content) {
+    const message = { role, content };
+    this.messages.push(message);
+    this.saveToStorage();
+    
+    // 更新隐藏输入字段
+    document.getElementById('messages-input').value = JSON.stringify(this.messages);
+    
+    return message;
+  },
+  
+  // 保存到localStorage
+  saveToStorage: function() {
+    localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(this.messages));
+  },
+  
+  // 从localStorage加载
+  loadFromStorage: function() {
+    const storedMessages = localStorage.getItem(STORAGE_KEYS.MESSAGES);
+    if (storedMessages) {
+      try {
+        this.messages = JSON.parse(storedMessages);
+        
+        // 更新隐藏输入字段
+        document.getElementById('messages-input').value = storedMessages;
+        
+        // 渲染所有消息
+        this.renderAllMessages();
+      } catch (error) {
+        console.error('加载聊天记录时出错:', error);
+        this.messages = [];
+      }
+    }
+  },
+  
+  // 清除所有消息
+  clearMessages: function() {
+    this.messages = [];
+    this.saveToStorage();
+    
+    // 更新隐藏输入字段
+    document.getElementById('messages-input').value = JSON.stringify(this.messages);
+    
+    // 清空消息容器
+    document.getElementById('messages-container').innerHTML = '';
+  },
+  
+  // 渲染所有消息
+  renderAllMessages: function() {
+    const messagesContainer = document.getElementById('messages-container');
+    messagesContainer.innerHTML = ''; // 清空容器
+    
+    // 使用Parsedown实例来渲染Markdown
+    const parsedown = {
+      text: markdownParser
+    };
+    
+    this.messages.forEach(message => {
+      const isUser = message.role === "user";
+      
+      // 创建消息元素
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `flex ${isUser ? "justify-end" : "parsedown justify-start"}`;
+      
+      const contentDiv = document.createElement('div');
+      contentDiv.className = isUser 
+        ? "max-w-[80%] bg-blue-500 text-white rounded-l-3xl rounded-t-3xl p-3"
+        : "max-w-[80%] assistant-bubble";
+      
+      // 处理内容
+      if (Array.isArray(message.content)) {
+        message.content.forEach(content => {
+          if (content.type === "image_url") {
+            const img = document.createElement('img');
+            img.src = content.image_url.url;
+            img.className = "max-w-full rounded-lg mb-2";
+            contentDiv.appendChild(img);
+          } else if (content.type === "text") {
+            const textDiv = document.createElement('div');
+            textDiv.innerHTML = parsedown.text(content.text || "");
+            contentDiv.appendChild(textDiv);
+          } else {
+            const textDiv = document.createElement('div');
+            textDiv.innerHTML = parsedown.text(content || "");
+            contentDiv.appendChild(textDiv);
+          }
+        });
+      } else {
+        contentDiv.innerHTML = parsedown.text(message.content || "错误：内容缺失");
+      }
+      
+      messageDiv.appendChild(contentDiv);
+      messagesContainer.appendChild(messageDiv);
+    });
+    
+    // 滚动到底部
+    scrollToBottom(true);
+  }
+};
+
+// 凭据管理器
+const CredentialsManager = {
+  // 保存凭据到localStorage
+  saveCredentials: function(apiKey, accountId) {
+    localStorage.setItem(STORAGE_KEYS.API_KEY, apiKey);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNT_ID, accountId);
+    hasApiCredentials = true;
+  },
+  
+  // 从localStorage获取凭据
+  getCredentials: function() {
+    return {
+      apiKey: localStorage.getItem(STORAGE_KEYS.API_KEY),
+      accountId: localStorage.getItem(STORAGE_KEYS.ACCOUNT_ID)
+    };
+  },
+  
+  // 检查是否有凭据
+  hasCredentials: function() {
+    const { apiKey, accountId } = this.getCredentials();
+    return !!(apiKey && accountId);
+  },
+  
+  // 清除凭据
+  clearCredentials: function() {
+    localStorage.removeItem(STORAGE_KEYS.API_KEY);
+    localStorage.removeItem(STORAGE_KEYS.ACCOUNT_ID);
+    hasApiCredentials = false;
   }
 };
 
@@ -923,8 +1056,7 @@ const messageInput = document.getElementById('message-input'),
       loadingTemplate = document.getElementById('loading-template'),
       userMessageTemplate = document.getElementById('user-message-template'),
       assistantMessageTemplate = document.getElementById('assistant-message-template'),
-      modelSelect = document.getElementById('model-select'),
-      modelSelectContainer = document.getElementById('model-select-container');
+      modelSelect = document.getElementById('model-select');
 
 // 延迟滚动处理器
 let scrollDebounceTimer;
@@ -942,6 +1074,11 @@ const showImagePreview = (input) => {
   const drawButton = document.getElementById('draw-image-btn');
   drawButton.classList.add('opacity-50', 'cursor-not-allowed');
   drawButton.disabled = true;
+
+  // 禁用推理按钮
+  const reasoningButton = document.getElementById('reasoning-btn');
+  reasoningButton.classList.add('opacity-50', 'cursor-not-allowed');
+  reasoningButton.disabled = true;
   
   let reader = new FileReader();
   reader.onload = (e) => {
@@ -966,6 +1103,11 @@ const clearImage = () => {
   const drawButton = document.getElementById('draw-image-btn');
   drawButton.classList.remove('opacity-50', 'cursor-not-allowed');
   drawButton.disabled = false;
+
+  // 重新启用推理按钮
+  const reasoningButton = document.getElementById('reasoning-btn');
+  reasoningButton.classList.remove('opacity-50', 'cursor-not-allowed');
+  reasoningButton.disabled = false;
 };
 
 // 优化的滚动函数
@@ -1008,6 +1150,28 @@ const addUserMessage = (message, imageElement = null) => {
   
   messagesContainer.appendChild(userMsgDiv);
   scrollToBottom(true);
+  
+  // 构建消息内容
+  const content = [];
+  
+  if (message && message.trim()) {
+    content.push({
+      type: "text",
+      text: message
+    });
+  }
+  
+  if (imageElement) {
+    content.push({
+      type: "image_url",
+      image_url: {
+        url: imageElement.src
+      }
+    });
+  }
+  
+  // 添加到消息管理器
+  MessageManager.addMessage("user", content);
 };
 
 // 高效的Markdown解析
@@ -1102,18 +1266,11 @@ const processStream = (streamResponse, responseContainer) => {
             updateDisplay();
           }
           
-          // 保存完整的响应到会话
-          fetch(window.location.href, {
-            method: 'POST',
-            headers: {
-              'X-Requested-With': 'XMLHttpRequest',
-              'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({
-              saveResponse: 'true',
-              response: responseText
-            })
-          });
+          // 将完整的响应保存到消息管理器
+          MessageManager.addMessage("assistant", [{
+            type: "text",
+            text: responseText
+          }]);
           
           resolve();
           return;
@@ -1166,7 +1323,7 @@ const processStream = (streamResponse, responseContainer) => {
       }).catch(error => {
         console.error('Stream reading error:', error);
         responseContainer.innerHTML += '<br><span class="text-red-500">读取流时出错。请尝试刷新页面。</span>';
-        resolve();
+   resolve();
       });
     }
     
@@ -1187,6 +1344,25 @@ document.getElementById('draw-image-btn').addEventListener('click', () => {
     ModelManager.setDrawingMode();
   } else {
     // 如果当前已经是图像模式，则切换回聊天模式
+    ModelManager.setChatMode();
+  }
+  
+  // 聚焦输入框
+  messageInput.focus();
+});
+
+// 添加推理按钮点击事件处理
+document.getElementById('reasoning-btn').addEventListener('click', () => {
+  // 检查是否已上传图片
+  if (document.querySelector('input[type=file]').files[0]) {
+    // 已上传图片，不执行操作
+    return;
+  }  
+  // 如果当前不是推理模式，则切换到推理模式
+  if (ModelManager.currentModel !== ModelManager.MODELS.REASONING) {
+    ModelManager.setReasoningMode();
+  } else {
+    // 如果当前已经是推理模式，则切换回聊天模式
     ModelManager.setChatMode();
   }
   
@@ -1249,6 +1425,18 @@ chatForm.addEventListener('submit', async (e) => {
     formData.set('actual_model', actualModelInput.value);
   }
   
+  // 获取凭据并添加到表单数据
+  const credentials = CredentialsManager.getCredentials();
+  if (credentials.apiKey) {
+    formData.append('api_key', credentials.apiKey);
+  }
+  if (credentials.accountId) {
+    formData.append('account_id', credentials.accountId);
+  }
+  
+  // 添加消息历史到表单数据
+  formData.set('messages', JSON.stringify(MessageManager.messages));
+  
   // 显示用户消息
   addUserMessage(message, imageElement);
   
@@ -1269,10 +1457,7 @@ chatForm.addEventListener('submit', async (e) => {
         headers: {
           'X-Requested-With': 'XMLHttpRequest'
         },
-        body: new URLSearchParams({
-          message: message,
-          model: model
-        })
+        body: formData
       });
       
       if (!response.ok) {
@@ -1303,10 +1488,22 @@ chatForm.addEventListener('submit', async (e) => {
         
         messagesContainer.appendChild(assistantMsgDiv);
         scrollToBottom(true);
+        
+        // 更新本地消息历史
+        if (result.messages && Array.isArray(result.messages)) {
+          MessageManager.messages = result.messages;
+          MessageManager.saveToStorage();
+        }
       } else {
         // 显示错误消息
         const responseContainer = createStreamingResponseContainer();
         responseContainer.innerHTML = result.error || '图像生成失败。请稍后再试。';
+        
+        // 添加错误消息到历史
+        MessageManager.addMessage("assistant", [{
+          type: "text",
+          text: result.error || '图像生成失败。请稍后再试。'
+        }]);
       }
       
     } catch (error) {
@@ -1316,15 +1513,16 @@ chatForm.addEventListener('submit', async (e) => {
       // 显示错误消息
       const responseContainer = createStreamingResponseContainer();
       responseContainer.innerHTML = '错误: 无法生成图像。请检查API密钥和账户ID，然后重试。';
+      
+      // 添加错误消息到历史
+      MessageManager.addMessage("assistant", [{
+        type: "text",
+        text: '错误: 无法生成图像。请检查API密钥和账户ID，然后重试。'
+      }]);
     } finally {
       // 如果有使用临时视觉模型，恢复之前的模型状态
       if (imageInput.files && imageInput.files[0]) {
         ModelManager.clearVisionModel();
-      }
-      
-      // 如果是绘图模式，切换回聊天模式
-      if (isDrawMode) {
-        ModelManager.setChatMode();
       }
       
       // 确保UI状态一致
@@ -1356,6 +1554,12 @@ chatForm.addEventListener('submit', async (e) => {
     } catch (error) {
       console.error('流式错误:', error);
       responseContainer.innerHTML = '错误: 无法获取响应。请检查API密钥和账户ID，然后重试。';
+      
+      // 添加错误消息到历史
+      MessageManager.addMessage("assistant", [{
+        type: "text",
+        text: '错误: 无法获取响应。请检查API密钥和账户ID，然后重试。'
+      }]);
     } finally {
       // 如果有使用临时视觉模型，恢复之前的模型状态
       if (imageInput.files && imageInput.files[0]) {
@@ -1382,6 +1586,14 @@ messageInput.addEventListener('keydown', e => {
 
 // 页面加载完成，滚动到底部
 window.addEventListener('load', () => {
+  // 检查是否有API凭据
+  hasApiCredentials = CredentialsManager.hasCredentials();
+  
+  // 从localStorage加载模型状态和消息历史
+  ModelManager.loadFromStorage();
+  MessageManager.loadFromStorage();
+  
+  // 滚动到底部
   scrollToBottom();
   
   // 初始化ModelManager状态并设置绘图按钮状态
@@ -1391,11 +1603,14 @@ window.addEventListener('load', () => {
   const textarea = document.getElementById('message-input');
   updateReplicatedValue(textarea);
   
-  // 检查是否已经上传图片，如果有则禁用绘图按钮
+  // 检查是否已经上传图片，如果有则禁用绘图和推理按钮
   if (document.querySelector('input[type=file]').files[0]) {
     const drawButton = document.getElementById('draw-image-btn');
     drawButton.classList.add('opacity-50', 'cursor-not-allowed');
     drawButton.disabled = true;
+    const reasoningButton = document.getElementById('reasoning-btn');
+    reasoningButton.classList.add('opacity-50', 'cursor-not-allowed');
+    reasoningButton.disabled = true;
   }
   
   // 在页面加载时根据当前输入状态设置按钮状态
@@ -1410,7 +1625,7 @@ window.addEventListener('load', () => {
   });
   
   // 检查是否有API凭据，如果没有并且没有历史消息，则显示API设置模态框
-  if (!hasApiCredentials && messagesContainer.childElementCount === 0) {
+  if (!hasApiCredentials && MessageManager.messages.length === 0) {
     // 延迟显示，确保DOM完全加载
     setTimeout(() => {
       apiKeyModal.classList.add('show');
@@ -1464,6 +1679,10 @@ window.addEventListener('click', (e) => {
 // 确认清除历史
 confirmClearBtn.addEventListener('click', async () => {
   try {
+    // 使用MessageManager清除消息
+    MessageManager.clearMessages();
+    
+    // 发送清除历史的请求
     const response = await fetch(`${window.location.href}?clear_history=1`, {
       method: 'GET',
       headers: {
@@ -1478,9 +1697,6 @@ confirmClearBtn.addEventListener('click', async () => {
     const result = await response.json();
     
     if (result.success) {
-      // 清空消息容器
-      messagesContainer.innerHTML = '';
-      
       // 重置表单
       messageInput.value = '';
       clearImage();
@@ -1494,6 +1710,12 @@ confirmClearBtn.addEventListener('click', async () => {
       const typewriterDiv = assistantMsgDiv.querySelector('.typewriter');
       typewriterDiv.textContent = "聊天历史已清除，我们可以开始新的对话了！";
       messagesContainer.appendChild(assistantMsgDiv);
+      
+      // 将此消息添加到历史
+      MessageManager.addMessage("assistant", [{
+        type: "text",
+        text: "聊天历史已清除，我们可以开始新的对话了！"
+      }]);
       
       // 关闭模态框
       clearHistoryModal.classList.remove('show');
@@ -1521,8 +1743,18 @@ const apiKeyBtn = document.getElementById('api-key-btn');
 const closeModalBtn = document.getElementById('close-modal');
 const apiCredentialsForm = document.getElementById('api-credentials-form');
 
+// 检查是否已有凭据，如果有则填充表单
+const initCredentialsForm = () => {
+  if (CredentialsManager.hasCredentials()) {
+    const { apiKey, accountId } = CredentialsManager.getCredentials();
+    document.getElementById('api-key').value = apiKey || '';
+    document.getElementById('account-id').value = accountId || '';
+  }
+};
+
 // 打开模态框
 apiKeyBtn.addEventListener('click', () => {
+  initCredentialsForm();
   apiKeyModal.classList.add('show');
 });
 
@@ -1543,15 +1775,20 @@ apiCredentialsForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   
   const formData = new FormData(apiCredentialsForm);
-  formData.append('save_credentials', 'true');
+  const apiKey = formData.get('api_key');
+  const accountId = formData.get('account_id');
+  
+  // 保存凭据到localStorage
+  CredentialsManager.saveCredentials(apiKey, accountId);
   
   try {
+    // 发送保存凭据的请求
     const response = await fetch(window.location.href, {
       method: 'POST',
       headers: {
         'X-Requested-With': 'XMLHttpRequest'
       },
-      body: formData
+      body: new FormData(apiCredentialsForm)
     });
     
     if (!response.ok) {
@@ -1561,9 +1798,6 @@ apiCredentialsForm.addEventListener('submit', async (e) => {
     const result = await response.json();
     
     if (result.success) {
-      // 更新API凭据状态
-      hasApiCredentials = true;
-      
       // 显示成功消息
       const successMessage = document.createElement('div');
       successMessage.className = 'mt-2 p-2 bg-green-100 text-green-700 rounded-md';
@@ -1578,7 +1812,10 @@ apiCredentialsForm.addEventListener('submit', async (e) => {
       // 添加成功消息
       apiCredentialsForm.appendChild(successMessage);
       
-      // 3秒后自动关闭模态框
+      // 更新API凭据状态
+      hasApiCredentials = true;
+      
+      // 1秒后自动关闭模态框
       setTimeout(() => {
         apiKeyModal.classList.remove('show');
         
@@ -1586,7 +1823,7 @@ apiCredentialsForm.addEventListener('submit', async (e) => {
         if (messageInput.value.trim() || document.querySelector('input[type=file]').files[0]) {
           chatForm.dispatchEvent(new Event('submit'));
         }
-      }, 3000);
+      }, 1000);
     }
   } catch (error) {
     console.error('保存API凭据错误:', error);
@@ -1604,6 +1841,18 @@ apiCredentialsForm.addEventListener('submit', async (e) => {
     
     // 添加错误消息
     apiCredentialsForm.appendChild(errorMessage);
+  }
+});
+
+// 初始化页面
+document.addEventListener('DOMContentLoaded', () => {
+  // 检查浏览器是否支持localStorage
+  try {
+    const test = '__test__';
+    localStorage.setItem(test, test);
+    localStorage.removeItem(test);
+  } catch (e) {
+    alert('您的浏览器不支持或禁用了localStorage，可能无法正常使用。');
   }
 });
 </script>
